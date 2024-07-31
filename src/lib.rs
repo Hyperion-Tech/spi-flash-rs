@@ -460,6 +460,22 @@ where
         Ok(())
     }
 
+    /// Erase the attached flash area starting at `address` of size `len`.
+    ///
+    /// It calls the provided callback function at regular intervals with the
+    /// number of bytes erased so far.
+    pub fn erase_cb<F: Fn(usize)>(&mut self, address: u32, len: usize, cb: F) -> Result<()> {
+        self.check_address_length(address, len)?;
+
+        // Work out a good erasure plan.
+        let erase_plan = self.make_erase_plan(address, len)?;
+
+        // Execute erasure plan.
+        self.run_erase_plan(&erase_plan, cb)?;
+
+        Ok(())
+    }
+
     /// Erase entire flash chip.
     ///
     /// This method is identical to `erase()`, except it draws a progress bar
@@ -523,6 +539,43 @@ where
         // Write new data.
         let start_addr = erase_plan.0[0].2;
         self.program_data(start_addr, &full_data)?;
+
+        // Optionally do a readback to verify all written data.
+        if verify {
+            let programmed = self.read(start_addr, full_data.len())?;
+            self.verify_readback(start_addr, &full_data, &programmed)?;
+        }
+
+        Ok(())
+    }
+
+    /// Program the attached flash with `data` starting at `address`.
+    ///
+    /// This is identical to `program()`, except it calls the provided
+    /// callback function at regular intervals with the number of bytes erased/programmed so far.
+    pub fn program_cb<F: Fn(usize, usize)>(
+        &mut self,
+        address: u32,
+        data: &[u8],
+        verify: bool,
+        cb: F,
+    ) -> Result<()> {
+        self.check_address_length(address, data.len())?;
+
+        // Work out a good erasure plan.
+        let erase_plan = self.make_erase_plan(address, data.len())?;
+
+        // Read data which will be inadvertently erased so we can restore it.
+        let full_data = self.make_restore_data(address, data, &erase_plan)?;
+
+        // Execute erasure plan.
+        self.run_erase_plan(&erase_plan, |total_erased| cb(total_erased, 0))?;
+
+        // Write new data.
+        let start_addr = erase_plan.0[0].2;
+        self.program_data_cb(start_addr, &full_data, |total_bytes| {
+            cb(data.len(), total_bytes)
+        })?;
 
         // Optionally do a readback to verify all written data.
         if verify {
